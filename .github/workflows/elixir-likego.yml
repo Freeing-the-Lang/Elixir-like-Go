@@ -1,0 +1,115 @@
+name: "Elixir-like-Go — 3OS Build + ProofLedger + Auto Release"
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: elixir-like-go-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-3os:
+    name: "Build — ${{ matrix.os }} (${{
+      github.ref_name }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build Executable
+        shell: bash
+        run: |
+          mkdir -p dist
+          GOOS=$(echo ${{ runner.os }} | tr '[:upper:]' '[:lower:]')
+          if [ "$GOOS" = "windows" ]; then
+            GOOS=windows
+            GOEXT=.exe
+          else
+            GOEXT=""
+          fi
+          echo "Building for $GOOS..."
+          go build -o dist/elixirgo-${GOOS}${GOEXT} ./cmd/elixirgo
+
+      - name: Generate Proof Ledger
+        shell: bash
+        run: |
+          echo "🧾 Generating ProofLedger..."
+          mkdir -p proof
+          echo "Elixir-like-Go Proof Ledger" > proof/proofledger.txt
+          echo "Timestamp: $(date)" >> proof/proofledger.txt
+          echo "Commit: $GITHUB_SHA" >> proof/proofledger.txt
+          echo "Branch: $GITHUB_REF_NAME" >> proof/proofledger.txt
+          echo "" >> proof/proofledger.txt
+          echo "SHA256 Checksums:" >> proof/proofledger.txt
+
+          for f in dist/*; do
+            shasum -a 256 "$f" >> proof/proofledger.txt
+          done
+
+      - name: Upload Artifacts (OS binary + ProofLedger)
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ runner.os }}-elixir-like-go"
+          path: |
+            dist/
+            proof/proofledger.txt
+
+  release:
+    name: "Release Merge (3OS)"
+    runs-on: ubuntu-latest
+    needs: [build-3os]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Tag
+        id: tagger
+        run: |
+          VERSION="v1.0.$(date +%Y%m%d%H%M)"
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+
+      - name: Zip Release Package
+        run: |
+          cd release
+          zip -r elixir-like-go-${{ steps.tagger.outputs.tag }}.zip ./*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tagger.outputs.tag }}
+          name: "Elixir-like-Go Release ${{ steps.tagger.outputs.tag }}"
+          body: |
+            ### Elixir-like-Go auto-build release  
+            - 3OS binaries  
+            - ProofLedger 포함  
+            - 자동 태그 생성  
+          files: |
+            release/elixir-like-go-${{ steps.tagger.outputs.tag }}.zip
