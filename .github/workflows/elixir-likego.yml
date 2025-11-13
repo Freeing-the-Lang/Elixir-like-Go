@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    types: [closed]
+    types: [ closed ]
   workflow_dispatch:
 
 permissions:
@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
   build-3os:
-    name: "Build — ${{ matrix.os }} (${{
-      github.ref_name }})"
+    name: "Build — ${{ matrix.os }} (${{ github.ref_name }})"
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -34,37 +34,65 @@ jobs:
         with:
           go-version: "1.22"
 
+      - name: Ensure go.mod exists
+        shell: bash
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "go.mod not found → creating automatically..."
+            go mod init Elixir-like-Go
+          fi
+          go mod tidy || true
+
       - name: Build Executable
         shell: bash
         run: |
           mkdir -p dist
           GOOS=$(echo ${{ runner.os }} | tr '[:upper:]' '[:lower:]')
+
           if [ "$GOOS" = "windows" ]; then
             GOOS=windows
-            GOEXT=.exe
+            GOEXT=".exe"
           else
             GOEXT=""
           fi
-          echo "Building for $GOOS..."
+
+          echo "Building for: $GOOS"
           go build -o dist/elixirgo-${GOOS}${GOEXT} ./cmd/elixirgo
 
-      - name: Generate Proof Ledger
+      - name: Generate Proof Ledger (3OS Compatible)
         shell: bash
         run: |
           echo "🧾 Generating ProofLedger..."
           mkdir -p proof
-          echo "Elixir-like-Go Proof Ledger" > proof/proofledger.txt
-          echo "Timestamp: $(date)" >> proof/proofledger.txt
-          echo "Commit: $GITHUB_SHA" >> proof/proofledger.txt
-          echo "Branch: $GITHUB_REF_NAME" >> proof/proofledger.txt
-          echo "" >> proof/proofledger.txt
-          echo "SHA256 Checksums:" >> proof/proofledger.txt
+          OUTFILE="proof/proofledger.txt"
+
+          echo "Elixir-like-Go Proof Ledger" > $OUTFILE
+          echo "Timestamp: $(date)" >> $OUTFILE
+          echo "Commit: $GITHUB_SHA" >> $OUTFILE
+          echo "Branch: $GITHUB_REF_NAME" >> $OUTFILE
+          echo "" >> $OUTFILE
+          echo "SHA256 Checksums:" >> $OUTFILE
+
+          # 자동 해시 명령어 선택
+          if command -v shasum >/dev/null 2>&1; then
+            HASH_CMD="shasum -a 256"
+          elif command -v sha256sum >/dev/null 2>&1; then
+            HASH_CMD="sha256sum"
+          else
+            HASH_CMD="powershell"
+          fi
 
           for f in dist/*; do
-            shasum -a 256 "$f" >> proof/proofledger.txt
+            echo "Processing: $f"
+            if [ "$HASH_CMD" = "powershell" ]; then
+              HASH=$(powershell.exe -Command "(Get-FileHash -Algorithm SHA256 '$f').Hash")
+              echo "$HASH  $f" >> $OUTFILE
+            else
+              $HASH_CMD "$f" >> $OUTFILE
+            fi
           done
 
-      - name: Upload Artifacts (OS binary + ProofLedger)
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: "${{ runner.os }}-elixir-like-go"
@@ -73,7 +101,7 @@ jobs:
             proof/proofledger.txt
 
   release:
-    name: "Release Merge (3OS)"
+    name: "Release Packaging (3OS)"
     runs-on: ubuntu-latest
     needs: [build-3os]
     if: github.ref == 'refs/heads/main'
@@ -107,9 +135,10 @@ jobs:
           tag_name: ${{ steps.tagger.outputs.tag }}
           name: "Elixir-like-Go Release ${{ steps.tagger.outputs.tag }}"
           body: |
-            ### Elixir-like-Go auto-build release  
-            - 3OS binaries  
-            - ProofLedger 포함  
-            - 자동 태그 생성  
+            ## Elixir-like-Go Auto Release
+            - ✔ 3OS Executables (Linux/macOS/Windows)
+            - ✔ ProofLedger 포함
+            - ✔ SHA256 자동 생성
+            - ✔ go.mod 자동 생성 fallback
           files: |
             release/elixir-like-go-${{ steps.tagger.outputs.tag }}.zip
